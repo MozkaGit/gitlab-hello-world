@@ -1,0 +1,149 @@
+variables:
+  HEROKU_APP_STAGING: staging-alpine-helloworld
+  HEROKU_APP_PRODUCTION: prod-alpine-helloworld
+  HEROKU_APP_REVIEW: review-alpine-helloworld
+  STAGING_DOMAIN: https://staging-alpine-helloworld.herokuapp.com/
+  PRODUCTION_DOMAIN: https://prod-alpine-helloworld.herokuapp.com/
+  
+image: docker:latest
+services:
+  - name: docker:dind
+    alias: docker
+
+stages:
+  - Build image
+  - Acceptance test
+  - Release
+  - Deploy review
+  - Stop review
+  - Deploy staging
+  - Docker test staging
+  - Deploy production
+  - Docker test production
+
+.deploy_template: &deploy
+  image: alpine
+  only:
+    - master
+  before_script:
+    - apk add --no-cache --upgrade curl
+  script:
+    - curl $DOMAIN | grep -q "Hello world!"
+    - if [ $? -eq 0 ]; then echo "Validation test succeed"; fi
+  environment:
+    name: $ENVIRONMENT_NAME/$CI_COMMIT_REF_NAME
+    url: $DOMAIN
+
+docker-build:
+  stage: Build image
+  script:
+    - docker build -t alpine.hello-world .
+    - docker save alpine.hello-world > alpine.hello-world.tar
+  artifacts:
+    paths:
+      - alpine.hello-world.tar
+
+docker-run:
+  stage: Acceptance test
+  before_script:
+    - apk add --no-cache --upgrade curl
+  script:
+    - docker load < alpine.hello-world.tar
+    - docker run -d -p 80:5000 -e PORT=5000 alpine.hello-world
+    - sleep 5
+    - curl "http://docker" | grep -q "Hello world!"
+    - if [ $? -eq 0 ]; then echo "acceptance test succeed"; fi
+
+docker-release:
+  stage: Release
+  before_script:
+    - docker login registry.gitlab.com -u $USERNAME -p $TOKEN
+  script:
+    - docker load < alpine.hello-world.tar
+    - docker tag alpine.hello-world $IMAGE:$CI_COMMIT_REF_NAME
+    - docker tag alpine.hello-world $IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $IMAGE:$CI_COMMIT_REF_NAME
+    - docker push $IMAGE:$CI_COMMIT_SHORT_SHA
+
+docker-deploy.staging:
+  stage: Deploy staging
+  before_script:
+    - apk add --update nodejs npm
+    - npm install -g heroku
+    - docker load < alpine.hello-world.tar
+  script:
+    - docker login --username=MozkaOps --password=$HEROKU_API_KEY registry.heroku.com
+    - heroku create $HEROKU_APP_STAGING || echo "App already exists"
+    - docker tag alpine.hello-world registry.heroku.com/$HEROKU_APP_STAGING/web
+    - docker push registry.heroku.com/$HEROKU_APP_STAGING/web
+    - heroku container:release web --app $HEROKU_APP_STAGING
+  environment:
+    name: staging/$CI_COMMIT_REF_NAME
+    url: https://staging-alpine-helloworld.herokuapp.com/
+  only:
+    - master
+
+docker-deploy.production:
+  stage: Deploy production
+  before_script:
+    - apk add --update nodejs npm
+    - npm install -g heroku
+    - docker load < alpine.hello-world.tar
+  script:
+    - docker login --username=MozkaOps --password=$HEROKU_API_KEY registry.heroku.com
+    - heroku create $HEROKU_APP_PRODUCTION || echo "App already exists"
+    - docker tag alpine.hello-world registry.heroku.com/$HEROKU_APP_PRODUCTION/web
+    - docker push registry.heroku.com/$HEROKU_APP_PRODUCTION/web
+    - heroku container:release web --app $HEROKU_APP_PRODUCTION
+  environment:
+    name: production/$CI_COMMIT_REF_NAME
+    url: https://prod-alpine-helloworld.herokuapp.com/
+  only:
+    - master
+
+docker-review:
+  stage: Deploy review
+  before_script:
+    - apk add --update nodejs npm
+    - npm install -g heroku
+  script:
+    - heroku container:login
+    - heroku create $HEROKU_APP_REVIEW || echo "App already exists"
+    - heroku container:push web --app $HEROKU_APP_REVIEW
+    - heroku container:release web --app $HEROKU_APP_REVIEW
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    url: https://$HEROKU_APP_REVIEW.herokuapp.com/
+    on_stop: docker-cleanup
+  only:
+    - merge_requests
+
+docker-cleanup:
+  stage: Stop review
+  before_script:
+    - apk add --update nodejs npm
+    - npm install -g heroku
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - heroku container:rm web --app $HEROKU_APP_REVIEW
+  when: manual
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    action: stop
+  only:
+    - merge_requests
+
+docker-test-staging:
+  <<: *deploy
+  stage: Docker test staging
+  variables:
+    DOMAIN: $STAGING_DOMAIN
+    ENVIRONMENT_NAME: staging
+
+docker-test-production:
+  <<: *deploy
+  stage: Docker test production
+  variables:
+    DOMAIN: $PRODUCTION_DOMAIN
+    ENVIRONMENT_NAME: production
