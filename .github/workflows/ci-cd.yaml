@@ -85,7 +85,7 @@ jobs:
 
       - name: Tag and push Docker image
         run: |
-          docker tag static-website mozkadocker/alpine-helloworld
+          docker tag hello-world mozkadocker/alpine-helloworld
           docker push mozkadocker/alpine-helloworld
 
   review:
