@@ -1,0 +1,261 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - closed
+
+jobs:
+  build_image:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.0.0
+
+      - name: Build Docker image
+        run: |
+          docker build -t hello-world .
+          docker save hello-world > hello-world.tar
+      
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v3.1.3
+        with:
+          name: hello-world.tar
+          path: hello-world.tar
+
+  acceptance_test:
+    name: Acceptance test
+    needs: build_image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: hello-world.tar
+
+      - name: Load Docker image
+        run: docker load < hello-world.tar
+
+      - name: Run Docker container
+        run: docker run -d -p 80:80 hello-world
+
+      - name: Wait for container to be ready
+        run: sleep 5
+
+      - name: Test the container
+        run: |
+          curl "http://localhost" | grep "Hello world!"
+          if [ $? -eq 0 ]; then echo "Acceptance test succeed"; fi
+
+  release:
+    name: Release
+    needs: acceptance_test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: hello-world.tar
+
+      - name: Load Docker image
+        run: docker load < hello-world.tar
+
+      - name: Log in to Docker registry
+        uses: docker/login-action@v2.2.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Tag and push Docker image
+        run: |
+          docker tag static-website mozkadocker/alpine-helloworld
+          docker push mozkadocker/alpine-helloworld
+
+  review:
+    name: Review
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+
+      - name: Deploy review to Heroku
+        uses: akhileshNS/heroku-deploy@v3.12.14
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: ""
+          heroku_email: ${{secrets.HEROKU_EMAIL}}
+          justlogin: true
+      - run: |
+          heroku container:login
+          heroku create review-mozka || echo "Name review-mozka is already taken"
+          heroku container:push web --app review-mozka
+          heroku container:release web --app review-mozka
+
+      - name: Save Heroku URL app
+        uses: akhileshNS/heroku-deploy@v3.12.14
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: ""
+          heroku_email: ${{secrets.HEROKU_EMAIL}}
+          justlogin: true
+      - run: |
+          echo $(heroku apps:info --app review-mozka | grep Web | awk '{print $3}') > review-url.txt
+          export REVIEW_URL=$(heroku apps:info --app review-mozka | grep Web | awk '{print $3}')
+
+
+    if: github.event.pull_request
+
+  stop_review:
+    name: Stop review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+      
+      - name: Heroku login
+        uses: akhileshNS/heroku-deploy@v3.12.14
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: ""
+          heroku_email: ${{secrets.HEROKU_EMAIL}}
+          justlogin: true
+      - run: heroku container:rm web --app review-mozka
+        env:
+          heroku_app_name: ${{secrets.HEROKU_APP}}
+
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+
+  staging:
+    name: Staging
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+
+      - name: Deploy staging to Heroku
+        uses: akhileshNS/heroku-deploy@v3.12.14
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: ""
+          heroku_email: ${{secrets.HEROKU_EMAIL}}
+          justlogin: true
+      - run: |
+          heroku container:login
+          heroku create staging-mozka || echo "Name staging-mozka is already taken"
+          heroku container:push web --app staging-mozka
+          heroku container:release web --app staging-mozka
+
+      - name: Save Heroku URL app
+        uses: akhileshNS/heroku-deploy@v3.12.14
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: ""
+          heroku_email: ${{secrets.HEROKU_EMAIL}}
+          justlogin: true
+      - run: |
+          echo $(heroku apps:info --app staging-mozka | grep Web | awk '{print $3}') > staging-url.txt
+          export STAGING_URL=$(heroku apps:info --app staging-mozka | grep Web | awk '{print $3}')
+
+      - name: Upload staging URL as artifact
+        uses: actions/upload-artifact@v3.1.3
+        with:
+          name: staging-url
+          path: staging-url.txt
+        
+
+  test_staging:
+    name: Test staging
+    needs: staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+
+      - name: Download staging URL artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: staging-url
+          path: .
+
+      - name: Test the staging environment
+        run: |
+          curl $(cat staging-url.txt) | grep "Hello world!"
+          if [ $? -eq 0 ]; then echo "Staging test succeed"; fi
+
+  production:
+    name: Production
+    needs: test_staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+
+      - name: Deploy production to Heroku
+        uses: akhileshNS/heroku-deploy@v3.12.14
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: ${{secrets.HEROKU_APP}}
+          heroku_email: ${{secrets.HEROKU_EMAIL}}
+          justlogin: true
+      - run: |
+          heroku container:login
+          heroku create prod-mozka || echo "Name prod-mozka is already taken"
+          heroku container:push web --app prod-mozka
+          heroku container:release web --app prod-mozka
+
+      - name: Save Heroku URL app
+        uses: akhileshNS/heroku-deploy@v3.12.14
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: ""
+          heroku_email: ${{secrets.HEROKU_EMAIL}}
+          justlogin: true
+      - run: |
+          echo $(heroku apps:info --app prod-mozka | grep Web | awk '{print $3}') > production-url.txt
+          export PRODUCTION_URL=$(heroku apps:info --app prod-mozka | grep Web | awk '{print $3}')
+        env:
+          heroku_app_name: ${{secrets.HEROKU_APP}}
+
+      - name: Upload production URL as artifact
+        uses: actions/upload-artifact@v3.1.3
+        with:
+          name: production-url
+          path: production-url.txt
+
+  test_production:
+    name: Test production
+    needs: production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.0
+
+      - name: Download staging URL artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: production-url
+          path: .
+
+      - name: Test the production environment
+        run: |
+          curl $(cat production-url.txt) | grep "Hello world!"
+          if [ $? -eq 0 ]; then echo "Production test succeed"; fi
