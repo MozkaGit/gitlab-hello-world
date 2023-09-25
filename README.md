@@ -1,4 +1,4 @@
-# GitLab Alpine Hello-World<br>[![CI/CD Pipeline](https://github.com/MozkaGit/gitlab-hello-world/actions/workflows/ci-cd.yaml/badge.svg)](https://github.com/MozkaGit/gitlab-hello-world/actions/workflows/ci-cd.yaml)</br>
+# GitLab Alpine Hello-World<br>[![CI/CD Pipeline](https://github.com/MozkaGit/gitlab-hello-world/actions/workflows/ci-cd.yaml/badge.svg)](https://github.com/MozkaGit/gitlab-hello-world/actions/workflows/ci-cd.yaml)
 
 This repository contains the necessary configuration and code to deploy an alpine-based docker application on Heroku using CI/CD pipeline. This project originally came from [my GitLab](https://gitlab.com/MozkaGit/alpine-helloworld) but I migrated it to GitHub and converted the `.gitlab.ci` to GitHub Actions.
 
